@@ -1,0 +1,82 @@
+/* Bose Data Studio - Core Security & Query Builder Module */
+
+block is_safe_identifier(name) {
+    when name == Null or name == "" { give false }
+    valid_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+    idx = 1
+    total = len(name)
+    loop idx <= total {
+        ch = name[idx]
+        when valid_chars.find(ch) == false {
+            give false
+        }
+        idx = idx + 1
+    }
+    give true
+}
+
+block escape_sql_value(val) {
+    when val == Null { give "NULL" }
+    t = text(val)
+    escaped = t.replace("'", "''")
+    give "'" + escaped + "'"
+}
+
+block is_destructive(sql) {
+    when sql == Null or sql == "" { give false }
+    upper_sql = sql.upper()
+    when upper_sql.find("DROP") or upper_sql.find("TRUNCATE") {
+        give true
+    }
+    give false
+}
+
+block build_select_sql(engine, table, limit, offset) {
+    quote = "`"
+    when engine == "sqlite" or engine == "postgres" { quote = "\"" }
+    give "SELECT * FROM " + quote + table + quote + " LIMIT " + text(limit) + " OFFSET " + text(offset) + ";"
+}
+
+block build_count_sql(engine, table) {
+    quote = "`"
+    when engine == "sqlite" or engine == "postgres" { quote = "\"" }
+    give "SELECT COUNT(*) as total_rows FROM " + quote + table + quote + ";"
+}
+
+block build_update_sql(engine, table, pk_col, pk_val, col, val) {
+    quote = "`"
+    when engine == "sqlite" or engine == "postgres" { quote = "\"" }
+    val_part = "'" + text(val).replace("'", "''") + "'"
+    pk_part = "'" + text(pk_val).replace("'", "''") + "'"
+    give "UPDATE " + quote + table + quote + " SET " + quote + col + quote + " = " + val_part + " WHERE " + quote + pk_col + quote + " = " + pk_part + ";"
+}
+
+block build_delete_sql(engine, table, pk_col, pk_val) {
+    quote = "`"
+    when engine == "sqlite" or engine == "postgres" { quote = "\"" }
+    pk_part = "'" + text(pk_val).replace("'", "''") + "'"
+    give "DELETE FROM " + quote + table + quote + " WHERE " + quote + pk_col + quote + " = " + pk_part + ";"
+}
+
+block build_insert_sql(engine, table, data_map) {
+    quote = "`"
+    when engine == "sqlite" or engine == "postgres" { quote = "\"" }
+    
+    keys = data_map.keys()
+    when len(keys) == 0 { give Null }
+    
+    col_names = []
+    val_items = []
+    
+    loop k from keys {
+        when is_safe_identifier(k) == false { give Null }
+        col_names.add(quote + k + quote)
+        v = data_map[k]
+        val_items.add("'" + text(v).replace("'", "''") + "'")
+    }
+    
+    cols_str = col_names.join(", ")
+    vals_str = val_items.join(", ")
+    
+    give "INSERT INTO " + quote + table + quote + " (" + cols_str + ") VALUES (" + vals_str + ");"
+}

@@ -1,0 +1,218 @@
+/* Bose Data Studio - Database Drivers Module */
+
+block run_mysql(host, port, user, pass, db, sql) {
+    cli_path = "drivers\\mariadb.exe"
+    when exist(cli_path) == false { cli_path = "..\\..\\database_server\\mysql\\12.3\\bin\\mariadb.exe" }
+    when exist(cli_path) == false { cli_path = "..\\..\\database_server\\mysql\\11.4\\bin\\mariadb.exe" }
+    when exist(cli_path) == false { cli_path = "mariadb.exe" }
+    when exist(cli_path) == false { cli_path = "mysql.exe" }
+    
+    t_id = text(int(clock() * 1000000.0))
+    temp_sql = "_tmp_my_" + t_id + ".sql"
+    write(temp_sql, sql)
+    
+    cmd_str = cli_path + " -h " + host + " -P " + text(port) + " -u " + user
+    when pass != Null and pass != "" { cmd_str = cmd_str + " -p\"" + pass + "\"" }
+    when db != Null and db != "" { cmd_str = cmd_str + " " + db }
+    cmd_str = cmd_str + " --batch --raw < \"" + temp_sql + "\""
+    
+    start_t = clock()
+    raw_out = system.run("cmd /c " + cmd_str)
+    cost_ms = (clock() - start_t) * 1000.0
+    delete(temp_sql)
+    clean_txt = raw_out.trim()
+    
+    when clean_txt.find("ERROR") or clean_txt.find("error:") or clean_txt.find("not recognized") or clean_txt.find("Can't connect") or clean_txt.find("Access denied") or clean_txt.find("Access is denied") or clean_txt.find("cannot find") or clean_txt.find("10013") or clean_txt.find("10061") {
+        all_err = clean_txt.split("\n")
+        err_lines = []
+        loop el from all_err {
+            tel = el.trim()
+            when tel != "" and tel.find("WARNING:") == false {
+                err_lines.add(tel)
+            }
+        }
+        msg = err_lines.join(" ")
+        when msg == "" { msg = clean_txt }
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": msg }
+    }
+    when clean_txt == "" {
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": Null }
+    }
+    
+    all_lines = clean_txt.split("\n")
+    clean_lines = []
+    loop l from all_lines {
+        tl = l.trim()
+        when tl != "" and tl.find("WARNING:") == false {
+            clean_lines.add(tl)
+        }
+    }
+    
+    when len(clean_lines) == 0 {
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": Null }
+    }
+    
+    header_line = clean_lines[1]
+    cols = header_line.split("\t")
+    row_list = []
+    
+    idx = 2
+    total = len(clean_lines)
+    loop idx <= total {
+        cur_line = clean_lines[idx]
+        parts = cur_line.split("\t")
+        row_map = {}
+        c_idx = 1
+        num_cols = len(cols)
+        loop c_idx <= num_cols {
+            col_name = cols[c_idx]
+            val = ""
+            when c_idx <= len(parts) { val = parts[c_idx] }
+            row_map[col_name] = val
+            c_idx = c_idx + 1
+        }
+        row_list.add(row_map)
+        idx = idx + 1
+    }
+    
+    give { "columns": cols, "rows": row_list, "count": len(row_list), "duration_ms": int(cost_ms), "error": Null }
+}
+
+block run_sqlite(db_path, sql) {
+    cli_path = "drivers\\sqlite3.exe"
+    when exist(cli_path) == false { cli_path = "sqlite3.exe" }
+    
+    t_id = text(int(clock() * 1000000.0))
+    temp_sql = "_tmp_sq_" + t_id + ".sql"
+    write(temp_sql, sql)
+    
+    cmd_str = cli_path + " -json \"" + db_path + "\" < \"" + temp_sql + "\""
+    start_t = clock()
+    raw_out = system.run("cmd /c " + cmd_str)
+    cost_ms = (clock() - start_t) * 1000.0
+    delete(temp_sql)
+    
+    clean_txt = raw_out.trim()
+    when clean_txt == "" {
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": Null }
+    }
+    when json.valid(clean_txt) {
+        row_list = json.read(clean_txt)
+        cols = []
+        when len(row_list) > 0 { cols = row_list[1].keys() }
+        give { "columns": cols, "rows": row_list, "count": len(row_list), "duration_ms": int(cost_ms), "error": Null }
+    }
+    give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": clean_txt }
+}
+
+block run_redis(host, port, auth, db_idx, args_list) {
+    cmd_text = args_list.join(" ")
+    when auth != Null and auth != "" {
+        cmd_text = "AUTH " + auth + "`r`n" + cmd_text
+    }
+    when db_idx != Null and db_idx > 0 {
+        cmd_text = "SELECT " + text(db_idx) + "`r`n" + cmd_text
+    }
+    
+    ps_cmd = "$c = New-Object System.Net.Sockets.TcpClient('" + host + "', " + text(port) + "); "
+    ps_cmd = ps_cmd + "$s = $c.GetStream(); $w = New-Object System.IO.StreamWriter($s); $r = New-Object System.IO.StreamReader($s); "
+    ps_cmd = ps_cmd + "$w.Write(\"" + cmd_text + "`r`n\"); $w.Flush(); "
+    ps_cmd = ps_cmd + "$out = $r.ReadLine(); $c.Close(); Write-Output $out"
+    
+    start_t = clock()
+    raw = system.run("powershell -NoProfile -ExecutionPolicy Bypass -Command \"" + ps_cmd + "\"")
+    cost_ms = (clock() - start_t) * 1000.0
+    clean_out = raw.trim()
+    
+    when clean_out.find("Exception") or clean_out.find("failed") or clean_out == "" {
+        give { "status": "error", "error": "Could not connect to Redis server at " + host + ":" + text(port) + ". Please check if Redis is running and reachable.", "duration_ms": int(cost_ms) }
+    }
+    give { "status": "ok", "result": clean_out, "duration_ms": int(cost_ms) }
+}
+
+block run_mongo(host, port, user, pass, action, params) {
+    cli_path = "drivers\\mongosh.exe"
+    when exist(cli_path) == false { cli_path = "mongosh.exe" }
+    when exist(cli_path) == false { cli_path = "mongo.exe" }
+    
+    when exist(cli_path) == false {
+        give { "status": "error", "error": "MongoDB client CLI (mongosh.exe) not found. Place mongosh.exe in the drivers/ folder to connect to live MongoDB databases.", "duration_ms": 0 }
+    }
+    
+    conn_uri = "mongodb://" + host + ":" + text(port)
+    when user != Null and user != "" {
+        conn_uri = "mongodb://" + user + ":" + pass + "@" + host + ":" + text(port)
+    }
+    
+    eval_script = "db.adminCommand('ping')"
+    when action == "list_collections" {
+        eval_script = "db.getCollectionNames()"
+    }
+    
+    cmd_str = cli_path + " \"" + conn_uri + "\" --quiet --eval \"" + eval_script + "\""
+    start_t = clock()
+    raw_out = system.run("cmd /c " + cmd_str)
+    cost_ms = (clock() - start_t) * 1000.0
+    clean_txt = raw_out.trim()
+    
+    when clean_txt.find("MongoServerError") or clean_txt.find("connect ECONNREFUSED") or clean_txt.find("Error:") {
+        give { "status": "error", "error": clean_txt, "duration_ms": int(cost_ms) }
+    }
+    when json.valid(clean_txt) {
+        give { "status": "ok", "result": json.read(clean_txt), "duration_ms": int(cost_ms) }
+    }
+    give { "status": "ok", "result": clean_txt, "duration_ms": int(cost_ms) }
+}
+
+block run_postgres(host, port, user, pass, db, sql) {
+    t_id = text(int(clock() * 1000000.0))
+    temp_sql = "_tmp_pg_" + t_id + ".sql"
+    write(temp_sql, sql)
+    
+    cmd_str = "psql -h " + host + " -p " + text(port) + " -U " + user + " -d " + db + " -A -F \"\t\" -f \"" + temp_sql + "\""
+    when pass != Null and pass != "" {
+        cmd_str = "set PGPASSWORD=" + pass + " && " + cmd_str
+    }
+    
+    start_t = clock()
+    raw_out = system.run("cmd /c " + cmd_str)
+    cost_ms = (clock() - start_t) * 1000.0
+    delete(temp_sql)
+    clean_txt = raw_out.trim()
+    
+    when clean_txt.find("psql: error:") or clean_txt.find("is not recognized") or clean_txt == "" {
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": clean_txt }
+    }
+    
+    lines = clean_txt.split("\n")
+    when len(lines) == 0 {
+        give { "columns": [], "rows": [], "count": 0, "duration_ms": int(cost_ms), "error": Null }
+    }
+    
+    header_line = lines[1].trim()
+    cols = header_line.split("\t")
+    row_list = []
+    
+    idx = 2
+    total = len(lines)
+    loop idx <= total {
+        cur_line = lines[idx].trim()
+        when cur_line != "" and cur_line.find("(") != 1 {
+            parts = cur_line.split("\t")
+            row_map = {}
+            c_idx = 1
+            num_cols = len(cols)
+            loop c_idx <= num_cols {
+                col_name = cols[c_idx]
+                val = ""
+                when c_idx <= len(parts) { val = parts[c_idx] }
+                row_map[col_name] = val
+                c_idx = c_idx + 1
+            }
+            row_list.add(row_map)
+        }
+        idx = idx + 1
+    }
+    
+    give { "columns": cols, "rows": row_list, "count": len(row_list), "duration_ms": int(cost_ms), "error": Null }
+}

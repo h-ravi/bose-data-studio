@@ -1,0 +1,398 @@
+/* Bose Data Studio - Secure Backend Engine (Pure BoseLang) */
+
+fix app = web(7474, true)
+fix sec = load("security.bose")
+fix drv = load("drivers.bose")
+
+out("⚡ ==================================================")
+out("⚡ Bose Data Studio v1.0 (Production Gateway)")
+out("⚡ Engine: Pure BoseLang Virtual Machine")
+out("⚡ Web URL: http://localhost:7474")
+out("⚡ ==================================================")
+
+SESSIONS = { }
+sess_counter = 1000
+
+block get_active_session(token) {
+    when token == Null or token == "" { give Null }
+    when SESSIONS[token] != Null { give SESSIONS[token] }
+    give Null
+}
+
+block exec_sql(sess, db_target, sql) {
+    eng = sess["engine"]
+    when eng == "sqlite" { give drv.run_sqlite(sess["database"], sql) }
+    when eng == "postgres" {
+        target = db_target
+        when target == Null or target == "" { target = sess["database"] }
+        give drv.run_postgres(sess["host"], sess["port"], sess["user"], sess["pass"], target, sql)
+    }
+    target = db_target
+    when target == Null or target == "" { target = sess["database"] }
+    give drv.run_mysql(sess["host"], sess["port"], sess["user"], sess["pass"], target, sql)
+}
+
+block authenticate_connection(engine, payload) {
+    when engine == "sqlite" {
+        db_path = payload["database"]
+        when db_path == Null or db_path == "" { give { "status": "error", "error": "Database path is required" } }
+        when exist(db_path) == false { write(db_path, "") }
+        give { "status": "ok", "database": db_path }
+    }
+    when engine == "redis" {
+        host = payload["host"]
+        when host == Null or host == "" { host = "127.0.0.1" }
+        port = payload["port"]
+        when port == Null or port == "" { port = 6379 }
+        auth = payload["pass"]
+        when auth == Null { auth = "" }
+        db_idx = payload["dbIndex"]
+        when db_idx == Null { db_idx = 0 }
+        r = drv.run_redis(host, port, auth, db_idx, ["PING"])
+        when r["status"] == "error" { give { "status": "error", "error": r["error"] } }
+        give { "status": "ok", "host": host, "port": port, "auth": auth, "db": db_idx }
+    }
+    when engine == "mongo" {
+        host = payload["host"]
+        when host == Null or host == "" { host = "127.0.0.1" }
+        port = payload["port"]
+        when port == Null or port == "" { port = 27017 }
+        db_name = payload["database"]
+        when db_name == Null or db_name == "" { db_name = "app_db" }
+        user = payload["user"]
+        when user == Null { user = "" }
+        pass = payload["pass"]
+        when pass == Null { pass = "" }
+        r = drv.run_mongo(host, port, user, pass, "ping", {})
+        when r["status"] == "error" { give { "status": "error", "error": r["error"] } }
+        give { "status": "ok", "host": host, "port": port, "database": db_name, "user": user, "pass": pass }
+    }
+    when engine == "postgres" {
+        host = payload["host"]
+        when host == Null or host == "" { host = "127.0.0.1" }
+        port = payload["port"]
+        when port == Null or port == "" { port = 5432 }
+        user = payload["user"]
+        when user == Null or user == "" { user = "postgres" }
+        pass = payload["pass"]
+        when pass == Null { pass = "" }
+        db = payload["database"]
+        when db == Null or db == "" { db = "postgres" }
+        r = drv.run_postgres(host, port, user, pass, db, "SELECT 1;")
+        when r["error"] != Null { give { "status": "error", "error": r["error"] } }
+        when len(r["rows"]) == 0 { give { "status": "error", "error": "Could not connect to PostgreSQL on " + host + ":" + text(port) } }
+        give { "status": "ok", "host": host, "port": port, "user": user, "pass": pass, "database": db }
+    }
+    host = payload["host"]
+    when host == Null or host == "" { host = "127.0.0.1" }
+    port = payload["port"]
+    when port == Null or port == "" { port = 3306 }
+    user = payload["user"]
+    when user == Null or user == "" { user = "root" }
+    pass = payload["pass"]
+    when pass == Null { pass = "" }
+    db = payload["database"]
+    when db == Null { db = "" }
+    r = drv.run_mysql(host, port, user, pass, db, "SELECT 1;")
+    when r["error"] != Null { give { "status": "error", "error": r["error"] } }
+    when len(r["rows"]) == 0 { give { "status": "error", "error": "Could not connect to MariaDB/MySQL at " + host + ":" + text(port) + ". Please check if MariaDB is running." } }
+    give { "status": "ok", "host": host, "port": port, "user": user, "pass": pass, "database": db }
+}
+
+loop req from app {
+    /* 1. Health Status */
+    when req.path == "/api/status" and req.method == "GET" {
+        req.cors().json({ "status": "online", "app": "Bose Data Studio", "version": "1.0.0", "active_sessions": len(SESSIONS) })
+    }
+    /* 2. Authentication: Connect & Issue Token (Vault Storage) */
+    again req.path == "/api/auth/connect" and req.method == "POST" {
+        payload = req.body
+        engine = payload["engine"]
+        when engine == Null or engine == "" { engine = "mysql" }
+        auth_res = authenticate_connection(engine, payload)
+        when auth_res["status"] == "error" {
+            req.cors().json({ "status": "error", "error": auth_res["error"] })
+        } otherwise {
+            sess_counter = sess_counter + 1
+            t_stamp = int(clock() * 100000.0)
+            token = "bose_sess_" + text(t_stamp) + "_" + text(sess_counter)
+            auth_res["token"] = token
+            auth_res["engine"] = engine
+            auth_res["created_at"] = clock()
+            SESSIONS[token] = auth_res
+            req.cors().json({ "status": "ok", "token": token, "engine": engine, "host": auth_res["host"], "port": auth_res["port"], "user": auth_res["user"], "database": auth_res["database"], "dbIndex": auth_res["db"] })
+        }
+    }
+    /* 3. Authentication: Disconnect & Purge */
+    again req.path == "/api/auth/disconnect" and req.method == "POST" {
+        payload = req.body
+        token = payload["token"]
+        when token != Null and SESSIONS[token] != Null { SESSIONS.remove(token) }
+        req.cors().json({ "status": "ok", "message": "Logged out successfully" })
+    }
+    /* 4. Schema: List Databases */
+    again req.path == "/api/schema/databases" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION", "message": "Session expired" })
+        } otherwise {
+            eng = sess["engine"]
+            when eng == "sqlite" {
+                req.cors().json({ "status": "ok", "databases": ["main"] })
+            } again eng == "mongo" {
+                req.cors().json({ "status": "ok", "databases": [sess["database"]] })
+            } again eng == "redis" {
+                req.cors().json({ "status": "ok", "databases": ["DB 0", "DB 1", "DB 2"] })
+            } again eng == "postgres" {
+                res = drv.run_postgres(sess["host"], sess["port"], sess["user"], sess["pass"], sess["database"], "SELECT datname FROM pg_database WHERE datistemplate = false;")
+                when res["error"] != Null {
+                    req.cors().json({ "status": "error", "error": res["error"] })
+                } otherwise {
+                    dblist = []
+                    loop r from res["rows"] {
+                        when r["datname"] != Null { dblist.add(r["datname"]) }
+                    }
+                    req.cors().json({ "status": "ok", "databases": dblist })
+                }
+            } otherwise {
+                res = drv.run_mysql(sess["host"], sess["port"], sess["user"], sess["pass"], "", "SHOW DATABASES;")
+                when res["error"] != Null {
+                    req.cors().json({ "status": "error", "error": res["error"] })
+                } otherwise {
+                    dblist = []
+                    loop r from res["rows"] {
+                        loop k from r.keys() {
+                            when r[k] != Null { dblist.add(r[k]) }
+                        }
+                    }
+                    req.cors().json({ "status": "ok", "databases": dblist })
+                }
+            }
+        }
+    }
+    /* 5. Schema: List Tables */
+    again req.path == "/api/schema/tables" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            when eng == "sqlite" {
+                res = drv.run_sqlite(sess["database"], "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+                tbls = []
+                loop r from res["rows"] {
+                    when r["name"] != Null { tbls.add(r["name"]) }
+                }
+                req.cors().json({ "status": "ok", "tables": tbls })
+            } again eng == "mongo" {
+                res = drv.run_mongo(sess["host"], sess["port"], sess["user"], sess["pass"], "list_collections", { "db": db_target })
+                when res["status"] == "error" {
+                    req.cors().json({ "status": "error", "error": res["error"] })
+                } otherwise {
+                    req.cors().json({ "status": "ok", "tables": res["result"] })
+                }
+            } again eng == "postgres" {
+                res = drv.run_postgres(sess["host"], sess["port"], sess["user"], sess["pass"], db_target, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
+                when res["error"] != Null {
+                    req.cors().json({ "status": "error", "error": res["error"] })
+                } otherwise {
+                    tbls = []
+                    loop r from res["rows"] {
+                        when r["table_name"] != Null { tbls.add(r["table_name"]) }
+                    }
+                    req.cors().json({ "status": "ok", "tables": tbls })
+                }
+            } otherwise {
+                res = drv.run_mysql(sess["host"], sess["port"], sess["user"], sess["pass"], db_target, "SHOW FULL TABLES WHERE Table_type != 'VIEW';")
+                when res["error"] != Null {
+                    req.cors().json({ "status": "error", "error": res["error"] })
+                } otherwise {
+                    tbls = []
+                    loop r from res["rows"] {
+                        klist = r.keys()
+                        when len(klist) > 0 { tbls.add(r[klist[1]]) }
+                    }
+                    req.cors().json({ "status": "ok", "tables": tbls })
+                }
+            }
+        }
+    }
+    /* 6. Schema: Column Structure */
+    again req.path == "/api/schema/columns" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        table = payload["table"]
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_safe_identifier(table) == false {
+            req.cors().json({ "status": "error", "error": "INVALID_IDENTIFIER" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            when eng == "sqlite" {
+                res = drv.run_sqlite(sess["database"], "PRAGMA table_info(\"" + table + "\");")
+                cols = []
+                loop r from res["rows"] {
+                    cols.add({ "Field": r["name"], "Type": r["type"], "Null": "NO", "Key": r["pk"], "Default": r["dflt_value"] })
+                }
+                req.cors().json({ "status": "ok", "columns": cols })
+            } again eng == "postgres" {
+                sql = "SELECT column_name as \"Field\", data_type as \"Type\", is_nullable as \"Null\", '' as \"Key\", column_default as \"Default\" FROM information_schema.columns WHERE table_name = '" + table + "' AND table_schema = 'public';"
+                res = drv.run_postgres(sess["host"], sess["port"], sess["user"], sess["pass"], db_target, sql)
+                req.cors().json({ "status": "ok", "columns": res["rows"] })
+            } otherwise {
+                res = drv.run_mysql(sess["host"], sess["port"], sess["user"], sess["pass"], db_target, "DESCRIBE `" + table + "`;")
+                req.cors().json({ "status": "ok", "columns": res["rows"] })
+            }
+        }
+    }
+    /* 7. Data: Browse Table (Paginated) */
+    again req.path == "/api/data/browse" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        table = payload["table"]
+        page = payload["page"]
+        when page == Null { page = 1 }
+        limit = payload["limit"]
+        when limit == Null { limit = 50 }
+        offset = (page - 1) * limit
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_safe_identifier(table) == false {
+            req.cors().json({ "status": "error", "error": "INVALID_IDENTIFIER" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            when eng == "mongo" {
+                res = drv.run_mongo(sess["host"], sess["port"], sess["user"], sess["pass"], "find_documents", { "collection": table, "limit": limit })
+                req.cors().json(res)
+            } otherwise {
+                sql = sec.build_select_sql(eng, table, limit, offset)
+                res = exec_sql(sess, db_target, sql)
+                req.cors().json(res)
+            }
+        }
+    }
+    /* 8. Data: Update Cell (Backend builds & escapes SQL) */
+    again req.path == "/api/data/update_cell" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        table = payload["table"]
+        pk_col = payload["pk_col"]
+        pk_val = payload["pk_val"]
+        col = payload["col"]
+        val = payload["val"]
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_safe_identifier(table) == false or sec.is_safe_identifier(pk_col) == false or sec.is_safe_identifier(col) == false {
+            req.cors().json({ "status": "error", "error": "INVALID_IDENTIFIER" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            when eng == "mongo" {
+                res = drv.run_mongo(sess["host"], sess["port"], sess["user"], sess["pass"], "update_document", { "collection": table, "id": pk_val, "field": col, "value": val })
+                req.cors().json(res)
+            } otherwise {
+                sql = sec.build_update_sql(eng, table, pk_col, pk_val, col, val)
+                res = exec_sql(sess, db_target, sql)
+                req.cors().json(res)
+            }
+        }
+    }
+    /* 9. Data: Delete Row (Backend builds & escapes SQL) */
+    again req.path == "/api/data/delete_row" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        table = payload["table"]
+        pk_col = payload["pk_col"]
+        pk_val = payload["pk_val"]
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_safe_identifier(table) == false or sec.is_safe_identifier(pk_col) == false {
+            req.cors().json({ "status": "error", "error": "INVALID_IDENTIFIER" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            when eng == "mongo" {
+                res = drv.run_mongo(sess["host"], sess["port"], sess["user"], sess["pass"], "delete_document", { "collection": table, "id": pk_val })
+                req.cors().json(res)
+            } otherwise {
+                sql = sec.build_delete_sql(eng, table, pk_col, pk_val)
+                res = exec_sql(sess, db_target, sql)
+                req.cors().json(res)
+            }
+        }
+    }
+    /* 10. Data: Insert Row (Backend builds & escapes SQL) */
+    again req.path == "/api/data/insert_row" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        table = payload["table"]
+        data_map = payload["data"]
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_safe_identifier(table) == false {
+            req.cors().json({ "status": "error", "error": "INVALID_IDENTIFIER" })
+        } otherwise {
+            eng = sess["engine"]
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            sql = sec.build_insert_sql(eng, table, data_map)
+            res = exec_sql(sess, db_target, sql)
+            req.cors().json(res)
+        }
+    }
+    /* 11. Data: Raw SQL Console (Destructive Interception) */
+    again req.path == "/api/data/raw_query" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        sql_query = payload["sql"]
+        confirm = payload["confirm_destructive"]
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } again sec.is_destructive(sql_query) and confirm != true {
+            req.cors().json({ "status": "error", "error": "DESTRUCTIVE_CONFIRMATION_REQUIRED", "message": "Destructive query detected (DROP/TRUNCATE). Explicit confirmation is required." })
+        } otherwise {
+            db_target = payload["database"]
+            when db_target == Null or db_target == "" { db_target = sess["database"] }
+            res = exec_sql(sess, db_target, sql_query)
+            req.cors().json(res)
+        }
+    }
+    /* 12. Redis NoSQL API */
+    again req.path == "/api/redis/cmd" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } otherwise {
+            res = drv.run_redis(sess["host"], sess["port"], sess["auth"], sess["db"], payload["args"])
+            req.cors().json(res)
+        }
+    }
+    /* 13. MongoDB NoSQL API */
+    again req.path == "/api/mongo/cmd" and req.method == "POST" {
+        payload = req.body
+        sess = get_active_session(payload["token"])
+        when sess == Null {
+            req.cors().json({ "status": "error", "error": "UNAUTHORIZED_SESSION" })
+        } otherwise {
+            params = payload["params"]
+            when params == Null { params = { } }
+            res = drv.run_mongo(sess["host"], sess["port"], sess["user"], sess["pass"], payload["action"], params)
+            req.cors().json(res)
+        }
+    }
+    /* 14. Static Assets */
+    otherwise {
+        req.static("public")
+    }
+}

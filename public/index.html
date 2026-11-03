@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bose Data Studio - Universal Database Manager</title>
+    <link rel="stylesheet" href="css/studio.css">
+</head>
+<body>
+    <div id="studio-app" class="studio-layout">
+        <!-- Top App Bar -->
+        <header class="studio-topbar">
+            <div class="topbar-brand">
+                <span class="brand-icon">⚡</span>
+                <span class="brand-title">Bose Data Studio</span>
+                <span class="brand-tag">Standalone v1.0</span>
+            </div>
+
+            <div class="topbar-center">
+                <div class="connection-pill" id="btn-open-connect">
+                    <span class="status-indicator online"></span>
+                    <span class="active-conn-label" id="active-conn-text">🐬 MariaDB @ 127.0.0.1:3306</span>
+                    <span class="pill-change-hint">Switch</span>
+                </div>
+            </div>
+
+            <div class="topbar-actions">
+                <button class="btn btn-secondary btn-sm" id="btn-theme-toggle">🌙 Theme</button>
+                <button class="btn btn-primary btn-sm" id="btn-quick-connect">+ Connect DB</button>
+            </div>
+        </header>
+
+        <!-- Main Studio Workspace -->
+        <div class="studio-body">
+            <!-- Left Sidebar -->
+            <aside class="studio-sidebar">
+                <div class="sidebar-section db-picker-section">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <label class="sidebar-label" for="select-database" style="margin-bottom:0;">Database</label>
+                        <button class="btn-icon" id="btn-open-create-db" title="Create New Database" style="font-size:11px; color:var(--primary);">+ New DB</button>
+                    </div>
+                    <div class="select-wrapper">
+                        <select id="select-database" class="studio-select">
+                            <option value="">-- Choose Database --</option>
+                        </select>
+                        <button class="btn-icon" id="btn-refresh-dbs" title="Refresh Databases">🔄</button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section table-search-section">
+                    <input type="text" id="input-search-tables" class="studio-input" placeholder="Search tables...">
+                </div>
+
+                <div class="sidebar-section tables-tree-section">
+                    <div class="tables-tree-header">
+                        <span class="tables-header-title">TABLES</span>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span class="tables-count-badge" id="tables-count">0</span>
+                            <button class="btn-icon" id="btn-open-create-table" title="Create New Table" style="font-size:11px; color:var(--primary); font-weight:bold;">+ New</button>
+                        </div>
+                    </div>
+                    <ul class="tables-list" id="tables-list-container">
+                        <li class="table-item-empty">No database selected</li>
+                    </ul>
+                </div>
+            </aside>
+
+            <!-- Center Content Area -->
+            <main class="studio-main">
+                <!-- Tab Navigation -->
+                <nav class="studio-tab-bar">
+                    <button class="tab-btn active" data-tab="grid">
+                        <span class="tab-icon">📊</span> Data Grid
+                    </button>
+                    <button class="tab-btn" data-tab="structure">
+                        <span class="tab-icon">🏛️</span> Structure
+                    </button>
+                    <button class="tab-btn" data-tab="sql">
+                        <span class="tab-icon">📝</span> SQL Console
+                    </button>
+                    <button class="tab-btn" data-tab="export">
+                        <span class="tab-icon">📤</span> Export
+                    </button>
+                </nav>
+
+                <!-- Tab 1: Data Grid -->
+                <section class="tab-content active" id="tab-grid">
+                    <div class="grid-toolbar">
+                        <div class="toolbar-left">
+                            <span class="active-table-name" id="grid-table-title">Select a table</span>
+                            <span class="total-rows-badge" id="grid-total-rows">0 rows</span>
+                            <input type="text" id="grid-filter-input" class="studio-input" style="width: 170px; height: 26px; font-size: 11px; margin-left: 10px;" placeholder="🔍 Filter rows...">
+                        </div>
+                        <div class="toolbar-right">
+                            <button class="btn btn-primary btn-xs" id="btn-open-insert">+ Add Row</button>
+                            <div class="pagination-controls">
+                                <button class="btn btn-secondary btn-xs" id="btn-prev-page">◀ Prev</button>
+                                <span class="page-indicator" id="page-indicator">Page 1</span>
+                                <button class="btn btn-secondary btn-xs" id="btn-next-page">Next ▶</button>
+                            </div>
+                            <button class="btn btn-secondary btn-xs" id="btn-refresh-grid">🔄 Refresh</button>
+                        </div>
+                    </div>
+                    <div class="grid-table-wrapper" id="grid-table-wrapper">
+                        <div class="empty-state">
+                            <span class="empty-icon">🗄️</span>
+                            <p>Select a table from the sidebar to browse records</p>
+                        </div>
+                    </div>
+
+                    <!-- Redis Key-Value Inspector Panel (Active when in Redis mode) -->
+                    <div id="tab-redis-inspector" style="display: none; flex: 1; flex-direction: column; overflow: hidden;">
+                        <div class="grid-toolbar" style="background: var(--bg-surface);">
+                            <div class="toolbar-left" style="gap: 10px;">
+                                <span class="active-table-name" id="redis-active-key-name" style="font-family: var(--font-mono); color: #38bdf8;">Select a key</span>
+                                <span class="type-pill" id="redis-active-key-type">STR</span>
+                                <span class="total-rows-badge" id="redis-active-key-ttl">TTL: Persistent</span>
+                            </div>
+                            <div class="toolbar-right">
+                                <input type="number" id="redis-input-ttl" class="studio-input" style="width: 90px; height: 26px; font-size: 11px;" placeholder="TTL secs">
+                                <button class="btn btn-secondary btn-xs" id="btn-redis-update-ttl">Set TTL</button>
+                                <button class="btn btn-primary btn-xs" id="btn-redis-save-val">Save Value</button>
+                                <button class="btn btn-secondary btn-xs" id="btn-redis-delete-key" style="color: var(--danger);">🗑️ Delete Key</button>
+                            </div>
+                        </div>
+                        <div style="flex: 1; padding: 16px; display: flex; flex-direction: column; background: var(--bg-base);">
+                            <label style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">KEY VALUE (RAW STRING / JSON / HASH)</label>
+                            <textarea id="redis-key-value-editor" class="sql-textarea" style="flex: 1; resize: none; font-size: 13px; line-height: 1.6;" placeholder="Select a key from sidebar to view/edit value"></textarea>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 2: Structure -->
+                <section class="tab-content" id="tab-structure">
+                    <div class="structure-toolbar">
+                        <span class="active-table-name" id="struct-table-title">Table Structure</span>
+                    </div>
+                    <div class="structure-table-wrapper" id="struct-table-wrapper">
+                        <div class="empty-state">
+                            <p>Select a table to inspect columns, types and keys</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 3: SQL Console -->
+                <section class="tab-content" id="tab-sql">
+                    <div class="sql-editor-container">
+                        <div class="sql-editor-toolbar">
+                            <span class="sql-title">SQL Query Editor</span>
+                            <div class="sql-toolbar-actions">
+                                <span class="sql-timing-badge" id="sql-timing">⏱️ 0.0ms</span>
+                                <button class="btn btn-primary btn-sm" id="btn-run-sql">▶ Run Query (Ctrl+Enter)</button>
+                            </div>
+                        </div>
+                        <textarea id="sql-editor-input" class="sql-textarea" rows="6" placeholder="SELECT * FROM table LIMIT 50;"></textarea>
+                    </div>
+                    <div class="sql-results-container">
+                        <div class="sql-results-header">
+                            <span>Query Results</span>
+                            <span class="results-meta" id="sql-results-meta">No query executed yet</span>
+                        </div>
+                        <div class="sql-results-wrapper" id="sql-results-wrapper">
+                            <div class="empty-state">
+                                <p>Write a query above and press Run</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 4: Export -->
+                <section class="tab-content" id="tab-export">
+                    <div class="export-card">
+                        <h3>Export Data</h3>
+                        <p>Export the current table data into multiple formats:</p>
+                        <div class="export-actions">
+                            <button class="btn btn-secondary" id="btn-export-json">📥 Export as JSON</button>
+                            <button class="btn btn-secondary" id="btn-export-csv">📥 Export as CSV</button>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <!-- Connection Modal -->
+        <div class="modal-overlay" id="modal-connect">
+            <div class="modal-box">
+                <div class="modal-header">
+                    <h3>Connect to Database</h3>
+                    <button class="btn-close" id="btn-close-connect">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="engine-tabs">
+                        <button class="engine-tab active" data-engine="mysql">🐬 MariaDB / MySQL</button>
+                        <button class="engine-tab" data-engine="sqlite">📁 SQLite (.db)</button>
+                        <button class="engine-tab" data-engine="postgres">🐘 PostgreSQL</button>
+                        <button class="engine-tab" data-engine="redis">⚡ Redis / KeyDB</button>
+                        <button class="engine-tab" data-engine="mongo">🍃 MongoDB</button>
+                    </div>
+
+                    <!-- MySQL Fields -->
+                    <div class="engine-fields" id="fields-mysql">
+                        <div class="form-row">
+                            <label>Host</label>
+                            <input type="text" id="conn-mysql-host" class="studio-input" value="127.0.0.1">
+                        </div>
+                        <div class="form-row">
+                            <label>Port</label>
+                            <input type="number" id="conn-mysql-port" class="studio-input" value="3306">
+                        </div>
+                        <div class="form-row">
+                            <label>Username</label>
+                            <input type="text" id="conn-mysql-user" class="studio-input" value="root">
+                        </div>
+                        <div class="form-row">
+                            <label>Password</label>
+                            <input type="password" id="conn-mysql-pass" class="studio-input" placeholder="(empty for root)">
+                        </div>
+                    </div>
+
+                    <!-- SQLite Fields -->
+                    <div class="engine-fields" id="fields-sqlite" style="display: none;">
+                        <div class="form-row">
+                            <label>SQLite Database File Path</label>
+                            <input type="text" id="conn-sqlite-path" class="studio-input" placeholder="e.g. sample.db or data/app.db">
+                        </div>
+                    </div>
+
+                    <!-- PostgreSQL Fields -->
+                    <div class="engine-fields" id="fields-postgres" style="display: none;">
+                        <div class="form-row">
+                            <label>PostgreSQL Host</label>
+                            <input type="text" id="conn-postgres-host" class="studio-input" value="127.0.0.1">
+                        </div>
+                        <div class="form-row">
+                            <label>Port</label>
+                            <input type="number" id="conn-postgres-port" class="studio-input" value="5432">
+                        </div>
+                        <div class="form-row">
+                            <label>Database</label>
+                            <input type="text" id="conn-postgres-db" class="studio-input" value="postgres">
+                        </div>
+                        <div class="form-row">
+                            <label>Username</label>
+                            <input type="text" id="conn-postgres-user" class="studio-input" value="postgres">
+                        </div>
+                        <div class="form-row">
+                            <label>Password</label>
+                            <input type="password" id="conn-postgres-pass" class="studio-input" placeholder="(password if set)">
+                        </div>
+                    </div>
+
+                    <!-- Redis Fields -->
+                    <div class="engine-fields" id="fields-redis" style="display: none;">
+                        <div class="form-row">
+                            <label>Redis / KeyDB Host</label>
+                            <input type="text" id="conn-redis-host" class="studio-input" value="127.0.0.1">
+                        </div>
+                        <div class="form-row">
+                            <label>Port</label>
+                            <input type="number" id="conn-redis-port" class="studio-input" value="6379">
+                        </div>
+                        <div class="form-row">
+                            <label>Auth Password (Optional)</label>
+                            <input type="password" id="conn-redis-pass" class="studio-input" placeholder="(empty if no password)">
+                        </div>
+                        <div class="form-row">
+                            <label>Database Index</label>
+                            <input type="number" id="conn-redis-db" class="studio-input" value="0">
+                        </div>
+                    </div>
+
+                    <!-- MongoDB Fields -->
+                    <div class="engine-fields" id="fields-mongo" style="display: none;">
+                        <div class="form-row">
+                            <label>MongoDB Host</label>
+                            <input type="text" id="conn-mongo-host" class="studio-input" value="127.0.0.1">
+                        </div>
+                        <div class="form-row">
+                            <label>Port</label>
+                            <input type="number" id="conn-mongo-port" class="studio-input" value="27017">
+                        </div>
+                        <div class="form-row">
+                            <label>Database Name</label>
+                            <input type="text" id="conn-mongo-db" class="studio-input" value="app_db">
+                        </div>
+                        <div class="form-row">
+                            <label>Username / Password (Optional)</label>
+                            <input type="text" id="conn-mongo-user" class="studio-input" placeholder="Username (optional)">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-connect">Cancel</button>
+                    <button class="btn btn-primary" id="btn-save-connect">Connect & Load</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Insert Row Modal -->
+        <div class="modal-overlay" id="modal-insert-row">
+            <div class="modal-box" style="width: 500px; max-height: 85vh; display: flex; flex-direction: column;">
+                <div class="modal-header">
+                    <h3 id="insert-modal-title">Insert New Row</h3>
+                    <button class="btn-close" id="btn-close-insert">&times;</button>
+                </div>
+                <div class="modal-body" style="overflow-y: auto; flex: 1;" id="insert-modal-fields">
+                    <!-- Dynamic column fields injected here -->
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-insert">Cancel</button>
+                    <button class="btn btn-primary" id="btn-submit-insert">Save Record</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+        <!-- Create Database Modal -->
+        <div class="modal-overlay" id="modal-create-db">
+            <div class="modal-box" style="width: 400px;">
+                <div class="modal-header">
+                    <h3>Create New Database</h3>
+                    <button class="btn-close" id="btn-close-create-db">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-row">
+                        <label>Database Name</label>
+                        <input type="text" id="input-new-db-name" class="studio-input" placeholder="e.g. my_ecommerce_db">
+                    </div>
+                    <p style="font-size:11px; color:var(--text-muted);" id="create-db-hint">
+                        Creates a new database on active MySQL/MariaDB server.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-create-db">Cancel</button>
+                    <button class="btn btn-primary" id="btn-submit-create-db">Create Database</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Visual Table Designer Modal -->
+        <div class="modal-overlay" id="modal-create-table">
+            <div class="modal-box" style="width: 680px; max-height: 88vh; display: flex; flex-direction: column;">
+                <div class="modal-header">
+                    <h3>Visual Table Designer</h3>
+                    <button class="btn-close" id="btn-close-create-table">&times;</button>
+                </div>
+                <div class="modal-body" style="overflow-y: auto; flex: 1;">
+                    <div class="form-row" style="margin-bottom: 16px;">
+                        <label style="font-weight:600;">Table Name</label>
+                        <input type="text" id="input-designer-table-name" class="studio-input" placeholder="e.g. products, customers, orders">
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-size:12px; font-weight:600; color:var(--text-muted);">COLUMNS SPECIFICATION</span>
+                        <button class="btn btn-secondary btn-xs" id="btn-add-designer-col">+ Add Column</button>
+                    </div>
+
+                    <div class="designer-cols-table-header">
+                        <span style="flex:2;">Name</span>
+                        <span style="flex:2;">Type</span>
+                        <span style="flex:1; text-align:center;">PK / AI</span>
+                        <span style="flex:1; text-align:center;">Not Null</span>
+                        <span style="width:30px;"></span>
+                    </div>
+
+                    <div id="designer-columns-list" style="display:flex; flex-direction:column; gap:6px;">
+                        <!-- Dynamic column rows -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-create-table">Cancel</button>
+                    <button class="btn btn-primary" id="btn-submit-create-table">Build & Create Table</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+        <!-- Add Redis Key Modal -->
+        <div class="modal-overlay" id="modal-add-redis-key">
+            <div class="modal-box" style="width: 440px;">
+                <div class="modal-header">
+                    <h3>Add New Redis Key</h3>
+                    <button class="btn-close" id="btn-close-add-key">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-row">
+                        <label>Key Name</label>
+                        <input type="text" id="input-new-redis-key" class="studio-input" placeholder="e.g. user:100:profile or cache:home">
+                    </div>
+                    <div class="form-row">
+                        <label>Initial Value (String / JSON)</label>
+                        <textarea id="input-new-redis-val" class="studio-input" rows="4" placeholder="e.g. Active or {&quot;id&quot;: 100}"></textarea>
+                    </div>
+                    <div class="form-row">
+                        <label>TTL in Seconds (Optional, leave empty for persistent)</label>
+                        <input type="number" id="input-new-redis-ttl" class="studio-input" placeholder="e.g. 3600">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-add-key">Cancel</button>
+                    <button class="btn btn-primary" id="btn-submit-add-key">Save Key</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Insert MongoDB Document Modal -->
+        <div class="modal-overlay" id="modal-insert-mongo-doc">
+            <div class="modal-box" style="width: 500px;">
+                <div class="modal-header">
+                    <h3 id="insert-mongo-doc-title">Insert MongoDB Document</h3>
+                    <button class="btn-close" id="btn-close-insert-mongo-doc">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-row">
+                        <label>Document JSON</label>
+                        <textarea id="input-new-mongo-doc-json" class="sql-textarea" rows="8" style="width:100%; font-size:12px;"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="btn-cancel-insert-mongo-doc">Cancel</button>
+                    <button class="btn btn-primary" id="btn-submit-insert-mongo-doc">Insert Document</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modular JS Scripts -->
+    <script src="js/studio_api.js"></script>
+    <script src="js/studio_sidebar.js"></script>
+    <script src="js/studio_crud.js"></script>
+    <script src="js/studio_designer.js"></script>
+    <script src="js/studio_redis.js"></script>
+    <script src="js/studio_mongo.js"></script>
+    <script src="js/studio_grid.js"></script>
+    <script src="js/studio_sql.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
